@@ -1,0 +1,187 @@
+import re
+from datetime import date
+
+from config import get_config
+
+config = get_config()
+
+# ActiveCampaign Deal custom field IDs (finestratek.api-us1.com account).
+# See memory/project_ac_deal_field_schema.md for the full discovery notes.
+FIELD = {
+    "comune": 79,
+    "cap": 80,
+    "provincia": 94,
+    "numero_fattura": 101,
+    "data_fattura": 102,
+    "azienda_emittente": 103,
+    "piva_emittente": 104,
+    "cf_emittente": 105,
+    "indirizzo_emittente": 106,
+    "cliente_destinatario": 107,
+    "cf_destinatario": 108,
+    "indirizzo_destinatario": 109,
+    "codice_destinatario": 110,
+    "metodo_pagamento": 111,
+    "istituto_bancario": 112,
+    "iban": 113,
+    "tipo_documento": 124,
+    "causale": 125,
+    "prodotto": 126,
+    "quantita": 127,
+    "prezzo_unitario": 128,
+    "importo_netto": 129,
+    "importo_lordo": 130,
+    "totale_imponibile": 132,
+    "iva_10": 133,
+    "iva_22": 134,
+    "totale_documento": 135,
+}
+
+
+class MissingInvoiceDataError(Exception):
+    pass
+
+
+def _get(fields: dict[int, str], key: str, default: str = "") -> str:
+    value = fields.get(FIELD[key], "")
+    return value.strip() if value else default
+
+
+def _to_iso_date(raw: str) -> str:
+    raw = raw.strip()
+    if not raw:
+        return date.today().isoformat()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+        return raw
+    match = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", raw)
+    if match:
+        day, month, year = match.groups()
+        return f"{year}-{month}-{day}"
+    return raw
+
+
+def _resolve_vat_rate(fields: dict[int, str]) -> str:
+    iva_10 = _get(fields, "iva_10")
+    iva_22 = _get(fields, "iva_22")
+
+    def is_populated(value: str) -> bool:
+        try:
+            return float(value.replace(",", ".")) > 0
+        except ValueError:
+            return False
+
+    if is_populated(iva_10):
+        return "10.00"
+    if is_populated(iva_22):
+        return "22.00"
+    raise MissingInvoiceDataError(
+        "Nessuna aliquota IVA valorizzata (campi 'IVA 10%'/'IVA 22%' entrambi vuoti)"
+    )
+
+
+def build_invoice_payload(deal_id: str, fields: dict[int, str]) -> dict:
+    """Pure 1:1 mapping of manually-filled Deal custom fields into an FPR12
+    payload for Sibill. No tax/VAT calculation is performed here — the
+    business decided all invoice fields are filled by hand in ActiveCampaign
+    before the trigger fires.
+    """
+    denominazione_cedente = _get(fields, "azienda_emittente", config.company_denominazione)
+    piva_cedente = _get(fields, "piva_emittente", config.company_partita_iva)
+    cf_cedente = _get(fields, "cf_emittente", config.company_codice_fiscale)
+    indirizzo_cedente = _get(fields, "indirizzo_emittente", config.company_indirizzo)
+
+    denominazione_cliente = _get(fields, "cliente_destinatario", "Cliente")
+    cf_cliente = _get(fields, "cf_destinatario")
+    indirizzo_cliente = _get(fields, "indirizzo_destinatario", "Indirizzo non specificato")
+    codice_destinatario = _get(fields, "codice_destinatario", "0000000")
+
+    comune = _get(fields, "comune", "Non specificato")
+    cap = _get(fields, "cap", config.company_cap)
+    provincia = _get(fields, "provincia", "MI")
+
+    tipo_documento = _get(fields, "tipo_documento", "TD01")
+    causale = _get(fields, "causale") or _get(fields, "prodotto", "Servizio")
+    data_fattura = _to_iso_date(_get(fields, "data_fattura"))
+
+    prodotto = _get(fields, "prodotto", "Servizio")
+    quantita = _get(fields, "quantita", "1.00")
+    prezzo_unitario = _get(fields, "prezzo_unitario", "0.00")
+    imponibile = _get(fields, "totale_imponibile", "0.00")
+    totale_documento = _get(fields, "totale_documento", imponibile)
+
+    vat_rate = _resolve_vat_rate(fields)
+    vat_amount = round(float(totale_documento.replace(",", ".")) - float(imponibile.replace(",", ".")), 2)
+
+    return {
+        "versione": "FPR12",
+        "fattura_elettronica_header": {
+            "versione": "FPR12",
+            "dati_trasmissione": {
+                "id_trasmittente": {"id_paese": "IT", "id_codice": piva_cedente},
+                "codice_destinatario": codice_destinatario,
+                "formato_trasmissione": "FPR12",
+            },
+            "cedente_prestatore": {
+                "dati_anagrafici": {
+                    "id_fiscale_iva": {"id_paese": "IT", "id_codice": piva_cedente},
+                    "codice_fiscale": cf_cedente,
+                    "anagrafica": {"denominazione": denominazione_cedente},
+                    "regime_fiscale": "RF01",
+                },
+                "sede": {
+                    "indirizzo": indirizzo_cedente,
+                    "cap": config.company_cap,
+                    "comune": config.company_comune,
+                    "provincia": config.company_provincia,
+                    "nazione": config.company_nazione,
+                },
+            },
+            "cessionario_committente": {
+                "dati_anagrafici": {
+                    # Solo codice_fiscale: il Deal non distingue P.IVA da CF per il
+                    # destinatario (clientela prevalentemente privata/B2C).
+                    "codice_fiscale": cf_cliente,
+                    "anagrafica": {"denominazione": denominazione_cliente},
+                },
+                "sede": {
+                    "indirizzo": indirizzo_cliente,
+                    "cap": cap,
+                    "comune": comune,
+                    "provincia": provincia,
+                    "nazione": "IT",
+                },
+            },
+        },
+        "fattura_elettronica_body": [
+            {
+                "dati_generali": {
+                    "dati_generali_documento": {
+                        "tipo_documento": tipo_documento,
+                        "divisa": "EUR",
+                        "data": data_fattura,
+                        "causale": [causale],
+                        "importo_totale_documento": totale_documento,
+                    },
+                },
+                "dati_beni_servizi": {
+                    "dettaglio_linee": [
+                        {
+                            "numero_linea": "1",
+                            "descrizione": prodotto,
+                            "quantita": quantita,
+                            "prezzo_unitario": prezzo_unitario,
+                            "prezzo_totale": imponibile,
+                            "aliquota_iva": vat_rate,
+                        }
+                    ],
+                    "dati_riepilogo": [
+                        {
+                            "aliquota_iva": vat_rate,
+                            "imponibile_importo": imponibile,
+                            "imposta": f"{vat_amount:.2f}",
+                        }
+                    ],
+                },
+            }
+        ],
+    }
