@@ -34,9 +34,9 @@ def activecampaign_webhook():
     logger.info(
         "Raw webhook payload received",
         extra={
-            "args": dict(request.args),
-            "form": dict(request.form),
-            "json": body,
+            "queryArgs": dict(request.args),
+            "formData": dict(request.form),
+            "jsonBody": body,
             "rawBody": request.get_data(as_text=True)[:2000],
         },
     )
