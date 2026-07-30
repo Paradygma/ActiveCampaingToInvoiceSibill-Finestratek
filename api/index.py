@@ -32,13 +32,11 @@ def activecampaign_webhook():
     body = request.get_json(silent=True) or {}
 
     logger.info(
-        "Raw webhook payload received",
-        extra={
-            "queryArgs": dict(request.args),
-            "formData": dict(request.form),
-            "jsonBody": body,
-            "rawBody": request.get_data(as_text=True)[:2000],
-        },
+        "Raw webhook payload received: queryArgs=%s formData=%s jsonBody=%s rawBody=%s",
+        dict(request.args),
+        dict(request.form),
+        body,
+        request.get_data(as_text=True)[:2000],
     )
 
     secret = request.args.get("secret") or body.get("secret")
