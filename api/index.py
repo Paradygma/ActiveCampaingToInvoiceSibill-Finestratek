@@ -31,6 +31,16 @@ def activecampaign_webhook():
     # the body. request.get_json() fallback is kept for manual/local testing.
     body = request.get_json(silent=True) or {}
 
+    logger.info(
+        "Raw webhook payload received",
+        extra={
+            "args": dict(request.args),
+            "form": dict(request.form),
+            "json": body,
+            "rawBody": request.get_data(as_text=True)[:2000],
+        },
+    )
+
     secret = request.args.get("secret") or body.get("secret")
     if not config.ac_webhook_secret or secret != config.ac_webhook_secret:
         logger.warning("Rejected webhook call: invalid secret")
