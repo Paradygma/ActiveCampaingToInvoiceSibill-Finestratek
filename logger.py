@@ -1,12 +1,29 @@
 import logging
 import os
 
+_STANDARD_LOG_RECORD_KEYS = set(logging.makeLogRecord({}).__dict__.keys())
+
+
+class ExtraFieldsFormatter(logging.Formatter):
+    """Appends any extra={...} fields to the log line, so they show up in
+    Vercel's runtime logs instead of being silently dropped."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        extras = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in _STANDARD_LOG_RECORD_KEYS
+        }
+        return f"{base} {extras}" if extras else base
+
+
 logger = logging.getLogger("ac_to_sibill")
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 if not logger.handlers:
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    handler.setFormatter(ExtraFieldsFormatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
 
 
