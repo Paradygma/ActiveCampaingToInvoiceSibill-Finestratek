@@ -37,6 +37,14 @@ FIELD = {
     "totale_documento": 135,
 }
 
+# Up to 5 installments: (due date field id, amount field id) pairs.
+SCADENZA_FIELDS = [(114, 115), (116, 117), (118, 119), (120, 121), (122, 123)]
+
+# Fixed SDI payment-method code — the business confirmed all payments are
+# bank transfers, so this is a constant, not inferred from the free-text
+# "Metodo di pagamento" Deal field (111), which is never read.
+MODALITA_PAGAMENTO = "MP05"
+
 
 class MissingInvoiceDataError(Exception):
     pass
@@ -60,23 +68,43 @@ def _to_iso_date(raw: str) -> str:
     return raw
 
 
+def _is_populated_amount(value: str) -> bool:
+    try:
+        return float(value.replace(",", ".")) > 0
+    except ValueError:
+        return False
+
+
 def _resolve_vat_rate(fields: dict[int, str]) -> str:
     iva_10 = _get(fields, "iva_10")
     iva_22 = _get(fields, "iva_22")
 
-    def is_populated(value: str) -> bool:
-        try:
-            return float(value.replace(",", ".")) > 0
-        except ValueError:
-            return False
-
-    if is_populated(iva_10):
+    if _is_populated_amount(iva_10):
         return "10.00"
-    if is_populated(iva_22):
+    if _is_populated_amount(iva_22):
         return "22.00"
     raise MissingInvoiceDataError(
         "Nessuna aliquota IVA valorizzata (campi 'IVA 10%'/'IVA 22%' entrambi vuoti)"
     )
+
+
+def _build_dettaglio_pagamento(fields: dict[int, str]) -> list[dict]:
+    """Maps the Deal's up-to-5 installment (Scadenza/Importo Scadenza) field
+    pairs into FatturaPA payment-detail lines, skipping empty installments."""
+    dettaglio_pagamento = []
+    for date_field_id, amount_field_id in SCADENZA_FIELDS:
+        amount = (fields.get(amount_field_id) or "").strip()
+        if not _is_populated_amount(amount):
+            continue
+        due_date = _to_iso_date((fields.get(date_field_id) or "").strip())
+        dettaglio_pagamento.append(
+            {
+                "modalita_pagamento": MODALITA_PAGAMENTO,
+                "data_scadenza_pagamento": due_date,
+                "importo_pagamento": amount,
+            }
+        )
+    return dettaglio_pagamento
 
 
 def build_invoice_payload(deal_id: str, fields: dict[int, str]) -> dict:
@@ -111,6 +139,8 @@ def build_invoice_payload(deal_id: str, fields: dict[int, str]) -> dict:
 
     vat_rate = _resolve_vat_rate(fields)
     vat_amount = round(float(totale_documento.replace(",", ".")) - float(imponibile.replace(",", ".")), 2)
+
+    dettaglio_pagamento = _build_dettaglio_pagamento(fields)
 
     return {
         "versione": "FPR12",
@@ -182,6 +212,20 @@ def build_invoice_payload(deal_id: str, fields: dict[int, str]) -> dict:
                         }
                     ],
                 },
+                **(
+                    {
+                        "dati_pagamento": [
+                            {
+                                "condizioni_pagamento": (
+                                    "TP01" if len(dettaglio_pagamento) > 1 else "TP02"
+                                ),
+                                "dettaglio_pagamento": dettaglio_pagamento,
+                            }
+                        ]
+                    }
+                    if dettaglio_pagamento
+                    else {}
+                ),
             }
         ],
     }
