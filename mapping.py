@@ -13,10 +13,6 @@ FIELD = {
     "provincia": 94,
     "numero_fattura": 101,
     "data_fattura": 102,
-    "azienda_emittente": 103,
-    "piva_emittente": 104,
-    "cf_emittente": 105,
-    "indirizzo_emittente": 106,
     "cliente_destinatario": 107,
     "cf_destinatario": 108,
     "indirizzo_destinatario": 109,
@@ -113,10 +109,14 @@ def build_invoice_payload(deal_id: str, fields: dict[int, str]) -> dict:
     business decided all invoice fields are filled by hand in ActiveCampaign
     before the trigger fires.
     """
-    denominazione_cedente = _get(fields, "azienda_emittente", config.company_denominazione)
-    piva_cedente = _get(fields, "piva_emittente", config.company_partita_iva)
-    cf_cedente = _get(fields, "cf_emittente", config.company_codice_fiscale)
-    indirizzo_cedente = _get(fields, "indirizzo_emittente", config.company_indirizzo)
+    # Cedente/prestatore (issuer) is always Aura srl's own registered fiscal
+    # data from config — never from the Deal's "* EMITTENTE" fields, which
+    # Sibill rejects with invalid_invoice_ownership if they don't match the
+    # company actually registered on the Sibill account.
+    denominazione_cedente = config.company_denominazione
+    piva_cedente = config.company_partita_iva
+    cf_cedente = config.company_codice_fiscale
+    indirizzo_cedente = config.company_indirizzo
 
     denominazione_cliente = _get(fields, "cliente_destinatario", "Cliente")
     cf_cliente = _get(fields, "cf_destinatario")
