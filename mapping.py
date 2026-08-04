@@ -85,37 +85,54 @@ def _resolve_vat_rate(fields: dict[int, str]) -> str:
 
 
 def _split(value: str) -> list[str]:
+    # Tolerate a trailing ';' (e.g. "A; B; C;") so it doesn't produce a
+    # spurious empty extra entry.
+    value = value.strip().rstrip(";").strip()
     return [part.strip() for part in value.split(";")] if value else []
 
 
 def _build_dettaglio_linee(fields: dict[int, str], vat_rate: str) -> list[dict]:
-    """Parses the Deal's ';'-delimited prodotto/quantita/prezzo_unitario/
-    importo_netto fields into one or more FatturaPA line items. A single
-    value with no ';' behaves as a single line, same as before."""
+    """Parses the Deal's ';'-delimited prodotto/quantita/prezzo_unitario
+    fields into one or more FatturaPA line items. 'Importo Netto' is
+    optional per line: if left blank, the line total is quantita ×
+    prezzo_unitario; if filled, it's used as-is. A single value with no
+    ';' behaves as a single line, same as before."""
     prodotti = _split(_get(fields, "prodotto", "Servizio"))
     quantitas = _split(_get(fields, "quantita", "1.00"))
     prezzi_unitari = _split(_get(fields, "prezzo_unitario", "0.00"))
-    importi = _split(_get(fields, "importo_netto", "0.00"))
+    importi_raw = _get(fields, "importo_netto")
+    importi = _split(importi_raw) if importi_raw else None
 
-    if not (len(prodotti) == len(quantitas) == len(prezzi_unitari) == len(importi)):
+    if not (len(prodotti) == len(quantitas) == len(prezzi_unitari)):
         raise MissingInvoiceDataError(
-            "I campi 'Prodotto', 'Quantità', 'Prezzo Unitario' e 'Importo Netto' "
-            "devono avere lo stesso numero di voci separate da ';'"
+            "I campi 'Prodotto', 'Quantità' e 'Prezzo Unitario' devono avere "
+            "lo stesso numero di voci separate da ';'"
+        )
+    if importi is not None and len(importi) != len(prodotti):
+        raise MissingInvoiceDataError(
+            "Il campo 'Importo Netto' deve avere lo stesso numero di voci "
+            "separate da ';' di 'Prodotto' (oppure va lasciato vuoto)"
         )
 
-    return [
-        {
-            "numero_linea": str(index + 1),
-            "descrizione": descrizione,
-            "quantita": quantita,
-            "prezzo_unitario": prezzo_unitario,
-            "prezzo_totale": importo,
-            "aliquota_iva": vat_rate,
-        }
-        for index, (descrizione, quantita, prezzo_unitario, importo) in enumerate(
-            zip(prodotti, quantitas, prezzi_unitari, importi)
+    dettaglio_linee = []
+    for index, (descrizione, quantita, prezzo_unitario) in enumerate(
+        zip(prodotti, quantitas, prezzi_unitari)
+    ):
+        if importi is not None:
+            prezzo_totale = importi[index]
+        else:
+            prezzo_totale = f"{float(quantita.replace(',', '.')) * float(prezzo_unitario.replace(',', '.')):.2f}"
+        dettaglio_linee.append(
+            {
+                "numero_linea": str(index + 1),
+                "descrizione": descrizione,
+                "quantita": quantita,
+                "prezzo_unitario": prezzo_unitario,
+                "prezzo_totale": prezzo_totale,
+                "aliquota_iva": vat_rate,
+            }
         )
-    ]
+    return dettaglio_linee
 
 
 def _build_dettaglio_pagamento(fields: dict[int, str]) -> list[dict]:
