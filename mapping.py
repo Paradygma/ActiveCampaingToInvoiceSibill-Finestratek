@@ -84,6 +84,40 @@ def _resolve_vat_rate(fields: dict[int, str]) -> str:
     )
 
 
+def _split(value: str) -> list[str]:
+    return [part.strip() for part in value.split(";")] if value else []
+
+
+def _build_dettaglio_linee(fields: dict[int, str], vat_rate: str) -> list[dict]:
+    """Parses the Deal's ';'-delimited prodotto/quantita/prezzo_unitario/
+    importo_netto fields into one or more FatturaPA line items. A single
+    value with no ';' behaves as a single line, same as before."""
+    prodotti = _split(_get(fields, "prodotto", "Servizio"))
+    quantitas = _split(_get(fields, "quantita", "1.00"))
+    prezzi_unitari = _split(_get(fields, "prezzo_unitario", "0.00"))
+    importi = _split(_get(fields, "importo_netto", "0.00"))
+
+    if not (len(prodotti) == len(quantitas) == len(prezzi_unitari) == len(importi)):
+        raise MissingInvoiceDataError(
+            "I campi 'Prodotto', 'Quantità', 'Prezzo Unitario' e 'Importo Netto' "
+            "devono avere lo stesso numero di voci separate da ';'"
+        )
+
+    return [
+        {
+            "numero_linea": str(index + 1),
+            "descrizione": descrizione,
+            "quantita": quantita,
+            "prezzo_unitario": prezzo_unitario,
+            "prezzo_totale": importo,
+            "aliquota_iva": vat_rate,
+        }
+        for index, (descrizione, quantita, prezzo_unitario, importo) in enumerate(
+            zip(prodotti, quantitas, prezzi_unitari, importi)
+        )
+    ]
+
+
 def _build_dettaglio_pagamento(fields: dict[int, str]) -> list[dict]:
     """Maps the Deal's up-to-5 installment (Scadenza/Importo Scadenza) field
     pairs into FatturaPA payment-detail lines, skipping empty installments."""
@@ -128,18 +162,16 @@ def build_invoice_payload(deal_id: str, fields: dict[int, str]) -> dict:
     provincia = _get(fields, "provincia", "MI")
 
     tipo_documento = _get(fields, "tipo_documento", "TD01")
-    causale = _get(fields, "causale") or _get(fields, "prodotto", "Servizio")
+    causale = _get(fields, "causale", "Servizio")
     data_fattura = _to_iso_date(_get(fields, "data_fattura"))
 
-    prodotto = _get(fields, "prodotto", "Servizio")
-    quantita = _get(fields, "quantita", "1.00")
-    prezzo_unitario = _get(fields, "prezzo_unitario", "0.00")
     imponibile = _get(fields, "totale_imponibile", "0.00")
     totale_documento = _get(fields, "totale_documento", imponibile)
 
     vat_rate = _resolve_vat_rate(fields)
     vat_amount = round(float(totale_documento.replace(",", ".")) - float(imponibile.replace(",", ".")), 2)
 
+    dettaglio_linee = _build_dettaglio_linee(fields, vat_rate)
     dettaglio_pagamento = _build_dettaglio_pagamento(fields)
 
     return {
@@ -194,16 +226,7 @@ def build_invoice_payload(deal_id: str, fields: dict[int, str]) -> dict:
                     },
                 },
                 "dati_beni_servizi": {
-                    "dettaglio_linee": [
-                        {
-                            "numero_linea": "1",
-                            "descrizione": prodotto,
-                            "quantita": quantita,
-                            "prezzo_unitario": prezzo_unitario,
-                            "prezzo_totale": imponibile,
-                            "aliquota_iva": vat_rate,
-                        }
-                    ],
+                    "dettaglio_linee": dettaglio_linee,
                     "dati_riepilogo": [
                         {
                             "aliquota_iva": vat_rate,
